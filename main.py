@@ -10,16 +10,15 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import precision_recall_fscore_support, roc_auc_score, confusion_matrix
 
 channel_ID = "P-1"
-jump = 1
 data_dir = "data"
-hidden_dim = 10
-output_dim = 25
-window_size = 10
-layer_dim = 10
-treshold = 99
+jump = 1
+hidden_dim = 64
+layer_dim = 16
+window_size = 30
+treshold = 95
 LR = 1e-3
-epochs = 10
-batch_size = 10
+epochs = 20
+batch_size = 32
 data_anomaly_sheet = "data/labeled_anomalies.csv"
 
 #select a channel from the anomaly file
