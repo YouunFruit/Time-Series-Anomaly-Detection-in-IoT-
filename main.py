@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+import json
 from sklearn.ensemble import IsolationForest
 from sklearn.svm import OneClassSVM
 from sklearn.preprocessing import StandardScaler
@@ -122,15 +123,24 @@ def main():
     os.makedirs("results", exist_ok=True)
 
     #LSTM model
-    print("\nTraining LSTM autoencoder...")
+    print("\nTraining LSTM ...")
     model = train_lstm(train_win, device)
     model.eval()
     with torch.no_grad():
         train_err = model.recon_error(torch.tensor(train_win, dtype=torch.float32).to(device)).cpu().numpy()
         test_err = model.recon_error(torch.tensor(test_win, dtype=torch.float32).to(device)).cpu().numpy()
     thresh = np.percentile(train_err, treshold)
-    results.append(evaluate("LSTM Autoencoder", y_true, (test_err > thresh).astype(int), test_err))
+    results.append(evaluate("LSTMModel", y_true, (test_err > thresh).astype(int), test_err))
+    df = pd.DataFrame(results)
+    print("\n=== Results ===")
+    print(df.to_string(index=False))
+    df.to_csv("results/evaluation_results.csv", index=False)
 
+    with open("results/run_metadata.json", "w") as f:
+        json.dump({"channel_id": channel_ID, "window_size": window_size, "jump": jump,
+                    "treshold": treshold, "device": device,
+                    "test_anomaly_rate": float(test_labels.mean())}, f, indent=2)
+    print("\nSaved results/evaluation_results.csv and results/run_metadata.json")
     
 if __name__ == "__main__":
     main()
