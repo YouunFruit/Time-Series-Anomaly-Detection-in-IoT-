@@ -6,12 +6,13 @@ import torch.nn as nn
 from sklearn.ensemble import IsolationForest
 from sklearn.svm import OneClassSVM
 from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import precision_recall_fscore_support, roc_auc_score, confusion_matrix
 
 channel_ID = "P-1"
 jump = 1
 data_dir = "data"
 hidden_dim = 10
-output_dim = 1
+output_dim = 25
 window_size = 10
 layer_dim = 10
 treshold = 99
@@ -50,29 +51,26 @@ def window_labels(labels, window_size, stride):
 select_channel("P-1")
 
 class LSTMModel(nn.Module):
-    def __init__(self, input_dim, hidden_dim, layer_dim, output_dim):
-        super(LSTMModel, self).__init__()
-        self.hidden_dim = hidden_dim
-        self.layer_dim = layer_dim
-        self.lstm = nn.LSTM(input_dim, hidden_dim, layer_dim, batch_first=True)
-        self.fc = nn.Linear(hidden_dim, output_dim)
+    def __init__(self, n_features, hidden_dim=64, latent_dim=16):
+        super().__init__()
+        self.encoder = nn.LSTM(n_features, hidden_dim, batch_first=True)
+        self.to_latent = nn.Linear(hidden_dim, latent_dim)
+        self.from_latent = nn.Linear(latent_dim, hidden_dim)
+        self.decoder = nn.LSTM(hidden_dim, hidden_dim, batch_first=True)
+        self.output = nn.Linear(hidden_dim, n_features)
 
-    def forward(self, x, h0=None, c0=None):
-        if h0 is None or c0 is None:
-            h0 = torch.zeros(self.layer_dim, x.size(
-                0), self.hidden_dim).to(x.device)
-            c0 = torch.zeros(self.layer_dim, x.size(
-                0), self.hidden_dim).to(x.device)
-
-        out, (hn, cn) = self.lstm(x, (h0, c0))
-        out = self.fc(out[:, -1, :])  # Take last time step
-        return out, hn, cn
+    def forward(self, x):
+        _, (h, _) = self.encoder(x)
+        latent = self.to_latent(h[-1])
+        dec_in = self.from_latent(latent).unsqueeze(1).repeat(1, x.size(1), 1)
+        dec_out, _ = self.decoder(dec_in)
+        return self.output(dec_out)
 
     def recon_error(self, x):
         return ((self.forward(x) - x) ** 2).mean(dim=(1, 2))
 
 def train_lstm(train_windows, device):
-    model = LSTMModel(train_windows.shape[-1], hidden_dim, layer_dim, output_dim).to(device)
+    model = LSTMModel(train_windows.shape[-1], hidden_dim, layer_dim).to(device)
     X = torch.tensor(train_windows, dtype=torch.float32)
     opt = torch.optim.Adam(model.parameters(), lr=LR)
     loss_fn = nn.MSELoss()
@@ -84,7 +82,9 @@ def train_lstm(train_windows, device):
         for i in range(0, len(X), ):
             batch = X[perm[i:i + batch_size]].to(device)
             opt.zero_grad()
-            loss = loss_fn(model(batch), batch)
+            predictions, *rest = model(batch) 
+    
+            loss = loss_fn(predictions, batch)
             loss.backward()
             opt.step()
             total_loss += loss.item() * len(batch)
@@ -121,14 +121,14 @@ def main():
     results = []
     os.makedirs("results", exist_ok=True)
 
-    # --- LSTM autoencoder ---
+    #LSTM model
     print("\nTraining LSTM autoencoder...")
     model = train_lstm(train_win, device)
     model.eval()
     with torch.no_grad():
         train_err = model.recon_error(torch.tensor(train_win, dtype=torch.float32).to(device)).cpu().numpy()
         test_err = model.recon_error(torch.tensor(test_win, dtype=torch.float32).to(device)).cpu().numpy()
-    thresh = np.percentile(train_err, threshold)
+    thresh = np.percentile(train_err, treshold)
     results.append(evaluate("LSTM Autoencoder", y_true, (test_err > thresh).astype(int), test_err))
 
     
