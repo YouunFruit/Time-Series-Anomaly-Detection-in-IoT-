@@ -1,13 +1,23 @@
 import os
 import numpy as np
 import pandas as pd
+import torch
+import torch.nn as nn
 from sklearn.ensemble import IsolationForest
 from sklearn.svm import OneClassSVM
 from sklearn.preprocessing import StandardScaler
 
 channel_ID = "P-1"
-stride = 1
+jump = 1
 data_dir = "data"
+hidden_dim = 10
+output_dim = 1
+window_size = 10
+layer_dim = 10
+treshold = 99
+LR = 1e-3
+epochs = 10
+batch_size = 10
 data_anomaly_sheet = "data/labeled_anomalies.csv"
 
 #select a channel from the anomaly file
@@ -38,3 +48,89 @@ def window_labels(labels, window_size, stride):
 
 
 select_channel("P-1")
+
+class LSTMModel(nn.Module):
+    def __init__(self, input_dim, hidden_dim, layer_dim, output_dim):
+        super(LSTMModel, self).__init__()
+        self.hidden_dim = hidden_dim
+        self.layer_dim = layer_dim
+        self.lstm = nn.LSTM(input_dim, hidden_dim, layer_dim, batch_first=True)
+        self.fc = nn.Linear(hidden_dim, output_dim)
+
+    def forward(self, x, h0=None, c0=None):
+        if h0 is None or c0 is None:
+            h0 = torch.zeros(self.layer_dim, x.size(
+                0), self.hidden_dim).to(x.device)
+            c0 = torch.zeros(self.layer_dim, x.size(
+                0), self.hidden_dim).to(x.device)
+
+        out, (hn, cn) = self.lstm(x, (h0, c0))
+        out = self.fc(out[:, -1, :])  # Take last time step
+        return out, hn, cn
+
+    def recon_error(self, x):
+        return ((self.forward(x) - x) ** 2).mean(dim=(1, 2))
+
+def train_lstm(train_windows, device):
+    model = LSTMModel(train_windows.shape[-1], hidden_dim, layer_dim, output_dim).to(device)
+    X = torch.tensor(train_windows, dtype=torch.float32)
+    opt = torch.optim.Adam(model.parameters(), lr=LR)
+    loss_fn = nn.MSELoss()
+
+    model.train()
+    for epoch in range(epochs):
+        perm = torch.randperm(len(X))
+        total_loss = 0.0
+        for i in range(0, len(X), ):
+            batch = X[perm[i:i + batch_size]].to(device)
+            opt.zero_grad()
+            loss = loss_fn(model(batch), batch)
+            loss.backward()
+            opt.step()
+            total_loss += loss.item() * len(batch)
+        if (epoch + 1) % 5 == 0 or epoch == 0:
+            print(f"  epoch {epoch + 1}/{epochs}  train_MSE={total_loss / len(X):.5f}")
+    return model
+
+def evaluate(name, y_true, y_pred, scores):
+    precision, recall, f1, _ = precision_recall_fscore_support(
+        y_true, y_pred, average="binary", zero_division=0)
+    try:
+        auc = roc_auc_score(y_true, scores)
+    except ValueError:
+        auc = float("nan")
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
+    far = (fp / (tn + fp)) * 1000 if (tn + fp) > 0 else 0.0
+    return {"model": name, "precision": round(precision, 4), "recall": round(recall, 4),
+            "f1_score": round(f1, 4), "auc_roc": round(auc, 4) if not np.isnan(auc) else "N/A","false_alarm_rate_per_1000": round(far, 2)}
+
+def main():
+    device = "cpu"
+    print(f"Device: {device}")
+
+    train, test, test_labels = select_channel(channel_ID)
+    print(f"train={train.shape} test={test.shape} test_anomaly_rate={test_labels.mean():.3%}")
+
+    mean, std = train.mean(axis=0), train.std(axis=0) + 1e-8
+    train_norm, test_norm = (train - mean) / std, (test - mean) / std
+
+    train_win = make_windows(train_norm, window_size, jump)
+    test_win = make_windows(test_norm, window_size, jump)
+    y_true = window_labels(test_labels, window_size, jump)
+
+    results = []
+    os.makedirs("results", exist_ok=True)
+
+    # --- LSTM autoencoder ---
+    print("\nTraining LSTM autoencoder...")
+    model = train_lstm(train_win, device)
+    model.eval()
+    with torch.no_grad():
+        train_err = model.recon_error(torch.tensor(train_win, dtype=torch.float32).to(device)).cpu().numpy()
+        test_err = model.recon_error(torch.tensor(test_win, dtype=torch.float32).to(device)).cpu().numpy()
+    thresh = np.percentile(train_err, threshold)
+    results.append(evaluate("LSTM Autoencoder", y_true, (test_err > thresh).astype(int), test_err))
+
+    
+if __name__ == "__main__":
+    main()
