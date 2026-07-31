@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environment (aienv/ also carries its own auto-generated .gitignore)
+aienv/
+venv/
+.venv/
+
+# Dataset — download separately (Kaggle), do not commit (~260MB extracted, 83MB zipped)
+data/
+archive.zip
+*.zip

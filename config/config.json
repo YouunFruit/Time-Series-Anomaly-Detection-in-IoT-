@@ -1,0 +1,32 @@
+{
+  "seed": 42,
+  "channel_id": "E-13",
+  "threshold_percentile": 95,
+  "data": {
+    "data_dir": "data",
+    "anomaly_file": "data/labeled_anomalies.csv"
+  },
+  "lstm": {
+    "window_size": 30,
+    "stride": 1,
+    "hidden": 32,
+    "layers": 1,
+    "lr": 0.0007,
+    "epochs": 15,
+    "batch": 64
+  },
+  "iforest": {
+    "window_size": 30,
+    "stride": 1,
+    "n_estimators": 150,
+    "contamination": 0.05,
+    "max_features": 0.8
+  },
+  "svm": {
+    "window_size": 30,
+    "stride": 1,
+    "kernel": "rbf",
+    "nu": 0.5,
+    "gamma": 0.0002
+  }
+}

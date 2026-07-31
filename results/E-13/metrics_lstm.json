@@ -1,0 +1,12 @@
+{
+  "f1": 0.036,
+  "precision": 0.0284,
+  "recall": 0.0492,
+  "auc_roc": 0.5335,
+  "false_alarm_rate_per_1000": 53.31,
+  "threshold": 1.691131,
+  "f1_pa": 0.5427,
+  "precision_pa": 0.3724,
+  "recall_pa": 1.0,
+  "false_alarm_rate_per_1000_pa": 53.31
+}

@@ -1,145 +1,77 @@
-import os
-import numpy as np
-import pandas as pd
-import torch
-import torch.nn as nn
 import json
-from sklearn.ensemble import IsolationForest
-from sklearn.svm import OneClassSVM
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import precision_recall_fscore_support, roc_auc_score, confusion_matrix
+import os
+import random
 
-channel_ID = "P-1"
-data_dir = "data"
-jump = 1
-hidden_dim = 64
-layer_dim = 16
-window_size = 30
-treshold = 95
-LR = 1e-3
-epochs = 20
-batch_size = 32
-data_anomaly_sheet = "data/labeled_anomalies.csv"
+import numpy as np
+import torch
 
-#select a channel from the anomaly file
-def select_channel(channel):
-    if not os.path.exists(data_anomaly_sheet):
-        raise FileNotFoundError("No anomaly sheet found. download it first from https://raw.githubusercontent.com/khundman/telemanom/master/labeled_anomalies.csv")
-    labels_df = pd.read_csv(data_anomaly_sheet)
-    if channel_ID not in labels_df["chan_id"].values:
-        raise ValueError("channel")
-#trying to do the data preparation
-    train = np.load(os.path.join(data_dir, "train", f"{channel_ID}.npy")).astype(np.float32)
-    test = np.load(os.path.join(data_dir, "test", f"{channel_ID}.npy")).astype(np.float32)
-    row = labels_df[labels_df["chan_id"] == channel_ID].iloc[0]
-    test_labels = np.zeros(len(test), dtype=int)
-    for start, end in eval(row["anomaly_sequences"]):
-        test_labels[start:end + 1] = 1
-    return train, test, test_labels
-
-# windows for looking for anomalies
-def make_windows(arr, window_size, stride):
-    n = (len(arr) - window_size) // stride + 1
-    return np.stack([arr[i:i + window_size] for i in range(0, n * stride, stride)])
+from processing import DataProcessor
+from models import (train_lstm, score_lstm, fit_isolation_forest, score_isolation_forest,
+                     fit_one_class_svm, score_one_class_svm)
+from evaluate import run_evaluation
 
 
-def window_labels(labels, window_size, stride):
-    n = (len(labels) - window_size) // stride + 1
-    return np.array([int(labels[i:i + window_size].max()) for i in range(0, n * stride, stride)])
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
-select_channel("P-1")
-
-class LSTMModel(nn.Module):
-    def __init__(self, n_features, hidden_dim=64, latent_dim=16):
-        super().__init__()
-        self.encoder = nn.LSTM(n_features, hidden_dim, batch_first=True)
-        self.to_latent = nn.Linear(hidden_dim, latent_dim)
-        self.from_latent = nn.Linear(latent_dim, hidden_dim)
-        self.decoder = nn.LSTM(hidden_dim, hidden_dim, batch_first=True)
-        self.output = nn.Linear(hidden_dim, n_features)
-
-    def forward(self, x):
-        _, (h, _) = self.encoder(x)
-        latent = self.to_latent(h[-1])
-        dec_in = self.from_latent(latent).unsqueeze(1).repeat(1, x.size(1), 1)
-        dec_out, _ = self.decoder(dec_in)
-        return self.output(dec_out)
-
-    def recon_error(self, x):
-        return ((self.forward(x) - x) ** 2).mean(dim=(1, 2))
-
-def train_lstm(train_windows, device):
-    model = LSTMModel(train_windows.shape[-1], hidden_dim, layer_dim).to(device)
-    X = torch.tensor(train_windows, dtype=torch.float32)
-    opt = torch.optim.Adam(model.parameters(), lr=LR)
-    loss_fn = nn.MSELoss()
-
-    model.train()
-    for epoch in range(epochs):
-        perm = torch.randperm(len(X))
-        total_loss = 0.0
-        for i in range(0, len(X), ):
-            batch = X[perm[i:i + batch_size]].to(device)
-            opt.zero_grad()
-            predictions, *rest = model(batch) 
-    
-            loss = loss_fn(predictions, batch)
-            loss.backward()
-            opt.step()
-            total_loss += loss.item() * len(batch)
-        if (epoch + 1) % 5 == 0 or epoch == 0:
-            print(f"  epoch {epoch + 1}/{epochs}  train_MSE={total_loss / len(X):.5f}")
-    return model
-
-def evaluate(name, y_true, y_pred, scores):
-    precision, recall, f1, _ = precision_recall_fscore_support(
-        y_true, y_pred, average="binary", zero_division=0)
+def get_device():
     try:
-        auc = roc_auc_score(y_true, scores)
-    except ValueError:
-        auc = float("nan")
-    tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
-    far = (fp / (tn + fp)) * 1000 if (tn + fp) > 0 else 0.0
-    return {"model": name, "precision": round(precision, 4), "recall": round(recall, 4),
-            "f1_score": round(f1, 4), "auc_roc": round(auc, 4) if not np.isnan(auc) else "N/A","false_alarm_rate_per_1000": round(far, 2)}
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        torch.zeros(1, device=device)
+    except RuntimeError:
+        device = torch.device("cpu")
+    return device
+
 
 def main():
-    device = "cpu"
-    print(f"Device: {device}")
+    with open("config/config.json") as f:
+        cfg = json.load(f)
 
-    train, test, test_labels = select_channel(channel_ID)
-    print(f"train={train.shape} test={test.shape} test_anomaly_rate={test_labels.mean():.3%}")
+    set_seed(cfg["seed"])
+    device = get_device()
+    channel_id = cfg["channel_id"]
 
-    mean, std = train.mean(axis=0), train.std(axis=0) + 1e-8
-    train_norm, test_norm = (train - mean) / std, (test - mean) / std
+    dp = DataProcessor(data_dir=cfg["data"]["data_dir"], anomaly_file=cfg["data"]["anomaly_file"])
 
-    train_win = make_windows(train_norm, window_size, jump)
-    test_win = make_windows(test_norm, window_size, jump)
-    y_true = window_labels(test_labels, window_size, jump)
+    def windows_for(model_key):
+        ws = cfg[model_key]["window_size"]
+        stride = cfg[model_key]["stride"]
+        train_w, test_w, point_labels, _ = dp.prepare_channel(channel_id, window_size=ws, stride=stride)
+        ts_idx = np.arange(ws - 1, ws - 1 + stride * test_w.shape[0], stride)
+        return train_w, test_w, point_labels, ts_idx
 
-    results = []
-    os.makedirs("results", exist_ok=True)
+    lstm_train_w, lstm_test_w, point_labels, lstm_ts = windows_for("lstm")
+    lstm_model = train_lstm(lstm_train_w, cfg, device)
+    lstm_train_scores = score_lstm(lstm_model, lstm_train_w, device)
+    lstm_test_scores = score_lstm(lstm_model, lstm_test_w, device)
 
-    #LSTM model
-    print("\nTraining LSTM ...")
-    model = train_lstm(train_win, device)
-    model.eval()
-    with torch.no_grad():
-        train_err = model.recon_error(torch.tensor(train_win, dtype=torch.float32).to(device)).cpu().numpy()
-        test_err = model.recon_error(torch.tensor(test_win, dtype=torch.float32).to(device)).cpu().numpy()
-    thresh = np.percentile(train_err, treshold)
-    results.append(evaluate("LSTMModel", y_true, (test_err > thresh).astype(int), test_err))
-    df = pd.DataFrame(results)
-    print("\n=== Results ===")
-    print(df.to_string(index=False))
-    df.to_csv("results/evaluation_results.csv", index=False)
+    if_train_w, if_test_w, _, if_ts = windows_for("iforest")
+    iforest = fit_isolation_forest(if_train_w, cfg)
+    if_train_scores = score_isolation_forest(iforest, if_train_w)
+    if_test_scores = score_isolation_forest(iforest, if_test_w)
 
-    with open("results/run_metadata.json", "w") as f:
-        json.dump({"channel_id": channel_ID, "window_size": window_size, "jump": jump,
-                    "treshold": treshold, "device": device,
-                    "test_anomaly_rate": float(test_labels.mean())}, f, indent=2)
-    print("\nSaved results/evaluation_results.csv and results/run_metadata.json")
-    
+    svm_train_w, svm_test_w, _, svm_ts = windows_for("svm")
+    svm = fit_one_class_svm(svm_train_w, cfg)
+    svm_train_scores = score_one_class_svm(svm, svm_train_w)
+    svm_test_scores = score_one_class_svm(svm, svm_test_w)
+
+    models = {
+        "lstm": {"timestamp_idx": lstm_ts, "train_scores": lstm_train_scores, "test_scores": lstm_test_scores},
+        "iforest": {"timestamp_idx": if_ts, "train_scores": if_train_scores, "test_scores": if_test_scores},
+        "svm": {"timestamp_idx": svm_ts, "train_scores": svm_train_scores, "test_scores": svm_test_scores},
+    }
+
+    out_dir = os.path.join("results", channel_id)
+    os.makedirs(out_dir, exist_ok=True)
+    metrics = run_evaluation(cfg, point_labels, models, out_dir=out_dir, summary_path="results/metrics_summary.csv")
+    print(json.dumps(metrics, indent=2))
+
+
 if __name__ == "__main__":
     main()
