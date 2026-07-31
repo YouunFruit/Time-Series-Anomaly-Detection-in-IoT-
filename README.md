@@ -1,6 +1,6 @@
 # Time-Series Anomaly Detection in IoT
 
-Compares a PyTorch LSTM forecaster against Isolation Forest and One-Class SVM baselines on NASA's SMAP/MSL spacecraft telemetry, isolating where and why static (non-sequential) models fail to capture memory-dependent anomalies. See [draft.md](draft.md) for the full writeup.
+Compares a PyTorch LSTM forecaster against Isolation Forest and One-Class SVM baselines on NASA's SMAP/MSL spacecraft telemetry, isolating where and why static (non-sequential) models fail to capture memory-dependent anomalies.
 
 ## Setup
 
