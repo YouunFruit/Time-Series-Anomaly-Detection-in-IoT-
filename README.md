@@ -19,7 +19,7 @@ Edit `config/config.json` to change the target channel (`channel_id`) or any mod
 ```python
 !git clone <this-repo-url> tsad && %cd tsad
 !pip install -r requirements.txt
-# upload/download the Kaggle dataset into data/ here
+# upload/download the Kaggle("https://www.kaggle.com/datasets/patrickfleith/nasa-anomaly-detection-dataset-smap-msl/data")dataset into data/ here
 !python3 main.py
 ```
 
